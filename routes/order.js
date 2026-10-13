@@ -7,6 +7,7 @@ const Cart = require('../models/Cart');
 const { requireAdmin } = require('../middleware/authMiddleware');
 
 const nodemailer = require('nodemailer');
+const { renderEmail } = require('../utils/emailTemplate');
 
 const generateFourDigitId = require('../models/Order').generateFourDigitId || async function generateFourDigitId() {
   let id;
@@ -69,6 +70,8 @@ router.post('/', authMiddleware, async (req, res) => {
       finalTotalUSD: req.body.totalUSD || 0,
       orderStatus: paymentMethod === 'credit-card' ? 'accepted' : 'pending',
     };
+    // Start the status history at creation so timelines show when the order was placed
+    orderData.statusUpdates = [{ status: orderData.orderStatus, date: new Date() }];
     const order = new Order(orderData);
     await order.save();
 
@@ -136,8 +139,15 @@ const sendOrderStatusEmail = async (to, orderId, statusLabel) => {
   await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to,
-    subject: `Order #${orderId} Status Update`,
-    html: `<p>Your order <b>#${orderId}</b> status is now: <b>${statusLabel}</b>.</p>`
+    subject: `Your KHALOOS order #${orderId}: ${statusLabel}`,
+    html: renderEmail({
+      heading: `Order #${orderId}`,
+      intro: 'There is an update on your KHALOOS order. Its status is now:',
+      highlight: statusLabel,
+      ctaLabel: process.env.FRONTEND_URL ? 'View my orders' : undefined,
+      ctaUrl: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/orderpage` : undefined,
+      outro: 'Thank you for shopping with KHALOOS.',
+    })
   });
 };
 
@@ -146,6 +156,10 @@ const sendOrderStatusEmail = async (to, orderId, statusLabel) => {
 router.put('/:id/status', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { status, reason, cancelledBy } = req.body;
+    const VALID_STATUSES = ['pending', 'accepted', 'out-for-delivery', 'delivered', 'cancelled', 'failed'];
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ message: `Invalid status: ${status}` });
+    }
     const order = await Order.findById(req.params.id);
     if (!order) {
       return res.status(404).json({ message: `Order with ID ${req.params.id} not found` });

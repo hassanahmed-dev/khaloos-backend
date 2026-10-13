@@ -247,6 +247,15 @@ const jwt = require('jsonwebtoken');
 const verifyToken = require('../middleware/authMiddleware');
 const { requireAdmin } = require('../middleware/authMiddleware');
 const cors = require('cors'); // Import cors
+const { renderEmail } = require('../utils/emailTemplate');
+
+// Fields that must never leave the server in a profile response
+const PRIVATE_USER_FIELDS = '-password -verificationCode -verificationCodeExpiry -resetToken -resetTokenExpiry';
+
+// A user may only read/modify their own account; admins may access any account
+function canAccessUser(req) {
+  return req.user && (req.user._id.toString() === req.params.id || req.user.role === 'admin');
+}
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -301,8 +310,13 @@ router.post('/signup', async (req, res) => {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'Verify Your Email',
-      html: `<p>Your verification code is: <strong>${verificationCode}</strong></p>`,
+      subject: 'Verify your KHALOOS account',
+      html: renderEmail({
+        heading: 'Welcome to KHALOOS',
+        intro: `Hi ${name}, thank you for creating an account. Enter the code below to verify your email address.`,
+        highlight: verificationCode,
+        outro: 'This code expires in one hour. If you did not sign up, you can safely ignore this email.',
+      }),
     });
 
     res.status(201).json({ message: 'User registered. Please check your email for the verification code.' });
@@ -385,8 +399,14 @@ router.post('/forgot-password', async (req, res) => {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'Password Reset Request',
-      html: `<p>Click the link to reset your password: <a href="${resetLink}">${resetLink}</a></p>`,
+      subject: 'Reset your KHALOOS password',
+      html: renderEmail({
+        heading: 'Reset your password',
+        intro: 'We received a request to reset the password for your KHALOOS account.',
+        ctaLabel: 'Choose a new password',
+        ctaUrl: resetLink,
+        outro: 'This link expires in one hour. If you did not request a reset, no action is needed.',
+      }),
     });
 
     res.json({ message: 'Password reset link sent to your email' });
@@ -420,9 +440,10 @@ router.post('/reset-password', async (req, res) => {
 });
 
 // Get User Profile
-router.get('/profile/:id', async (req, res) => {
+router.get('/profile/:id', verifyToken, async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password');
+    if (!canAccessUser(req)) return res.status(403).json({ message: 'Not authorized' });
+    const user = await User.findById(req.params.id).select(PRIVATE_USER_FIELDS);
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -437,6 +458,7 @@ router.get('/profile/:id', async (req, res) => {
 router.put('/profile/:id', verifyToken, async (req, res) => {
   const { name, phone } = req.body;
   try {
+    if (!canAccessUser(req)) return res.status(403).json({ message: 'Not authorized' });
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
@@ -450,7 +472,8 @@ router.put('/profile/:id', verifyToken, async (req, res) => {
     }
 
     await user.save();
-    res.json({ message: 'Profile updated', user: user.toObject({ getters: true }) });
+    const safeUser = await User.findById(user._id).select(PRIVATE_USER_FIELDS);
+    res.json({ message: 'Profile updated', user: safeUser.toObject({ getters: true }) });
   } catch (error) {
     console.error('Profile update error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -461,6 +484,9 @@ router.put('/profile/:id', verifyToken, async (req, res) => {
 router.patch('/change-password/:id', verifyToken, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   try {
+    if (!req.user || req.user._id.toString() !== req.params.id) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
     const isMatch = await bcrypt.compare(currentPassword, user.password);

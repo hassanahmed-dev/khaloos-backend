@@ -48,6 +48,8 @@ const paymentRoutes = require("./routes/payment");
 app.use("/api/payment", paymentRoutes);
 const orderRoutes = require("./routes/order");
 app.use("/api/orders", orderRoutes);
+app.use("/api/settings", require("./routes/settings"));
+app.use("/api/uploads", require("./routes/upload"));
 
 // Error Handling
 app.use((err, req, res, next) => {

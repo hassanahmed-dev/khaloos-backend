@@ -21,7 +21,7 @@ router.post('/', verifyToken, async (req, res) => {
     // Find the product's ObjectId if productId is a custom string
     let productObjectId;
     if (mongoose.Types.ObjectId.isValid(productId)) {
-      productObjectId = mongoose.Types.ObjectId(productId);
+      productObjectId = new mongoose.Types.ObjectId(productId);
     } else {
       // Try to find the product by custom id
       const productDoc = await Product.findOne({ id: productId });
@@ -77,6 +77,29 @@ router.post('/', verifyToken, async (req, res) => {
   }
 });
 
+// Public highlights for the storefront: recent 4–5 star reviews with only display-safe fields
+router.get('/highlights', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 6, 12);
+    const reviews = await Review.find({ rating: { $gte: 4 } })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('productId productName userName rating text createdAt');
+    res.json(reviews.map(r => ({
+      _id: r._id,
+      productId: r.productId,
+      productName: r.productName,
+      // First name only, to avoid publishing customers' full names
+      userName: String(r.userName || '').trim().split(/\s+/)[0],
+      rating: r.rating,
+      text: r.text,
+      createdAt: r.createdAt,
+    })));
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 // Get reviews for a product
 router.get('/:productId', async (req, res) => {
   try {
@@ -88,7 +111,7 @@ router.get('/:productId', async (req, res) => {
     // Restore the logic to handle cases where productId might be a string or an ObjectId.
     // This is necessary if the data in the database is not consistent.
     const query = mongoose.Types.ObjectId.isValid(productId)
-      ? { $or: [{ productId: mongoose.Types.ObjectId(productId) }, { productId: productId }] }
+      ? { $or: [{ productId: new mongoose.Types.ObjectId(productId) }, { productId: productId }] }
       : { productId: productId };
 
     const reviews = await Review.find(query).sort({ createdAt: -1 });
@@ -117,6 +140,11 @@ router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
     if (!review) {
       return res.status(404).json({ message: 'Review not found' });
     }
+    // Keep the product's rating summary in sync with the remaining reviews
+    const remaining = await Review.find({ productId: review.productId });
+    const reviewsCount = remaining.length;
+    const ratings = reviewsCount ? remaining.reduce((sum, r) => sum + r.rating, 0) / reviewsCount : 0;
+    await Product.findOneAndUpdate({ id: review.productId }, { reviewsCount, ratings });
     res.json({ message: 'Review deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });

@@ -32,7 +32,10 @@ const ProductSchema = new mongoose.Schema({
     }
   ],
   colorStock: [ColorStockSchema],
+  // Optional shoe sizes offered for every colour (e.g. ["36", "37", "38"]); empty for bags
+  sizes: [{ type: String }],
   status: { type: String, enum: ['In Stock', 'Out Of Stock'], default: 'In Stock' },
+  featured: { type: Boolean, default: false },
   ratings: { type: Number, default: 0 },
   reviewsCount: { type: Number, default: 0 }
 });

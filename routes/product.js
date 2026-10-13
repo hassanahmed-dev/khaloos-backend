@@ -4,10 +4,25 @@ const Product = require('../models/Product');
 const cloudinary = require('../config/cloudinary');
 const multer = require('multer');
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\/(jpeg|png|webp|avif|gif)$/.test(file.mimetype)) return cb(null, true);
+    cb(new Error('Only JPEG, PNG, WebP, AVIF or GIF images are allowed'));
+  },
+});
 const streamifier = require('streamifier');
 const verifyToken = require('../middleware/authMiddleware');
 const { requireAdmin } = require('../middleware/authMiddleware');
+const Order = require('../models/Order');
+
+// Multipart forms send arrays as JSON strings; an empty string means "no items"
+function parseJsonArray(value) {
+  if (typeof value !== 'string') return value;
+  if (value.trim() === '') return [];
+  return JSON.parse(value);
+}
 
 // GET all products
 router.get('/', async (req, res) => {
@@ -37,6 +52,29 @@ router.get('/top-rated', async (req, res) => {
   }
 });
 
+// Public best sellers: products ranked by quantity sold in non-cancelled orders
+router.get('/best-sellers', async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 8, 24);
+    const ranked = await Order.aggregate([
+      { $match: { orderStatus: { $nin: ['cancelled', 'failed'] } } },
+      { $unwind: '$cartItems' },
+      { $group: { _id: '$cartItems.productId', orderCount: { $sum: '$cartItems.quantity' } } },
+      { $sort: { orderCount: -1 } },
+      { $limit: limit },
+    ]);
+    const products = await Product.find({ _id: { $in: ranked.map(r => r._id) } });
+    const byId = new Map(products.map(p => [p._id.toString(), p]));
+    res.json(
+      ranked
+        .filter(r => byId.has(String(r._id)))
+        .map(r => ({ ...byId.get(String(r._id)).toObject(), orderCount: r.orderCount }))
+    );
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET product by ID
 router.get('/:id', async (req, res) => {
   try {
@@ -54,14 +92,12 @@ router.post('/', verifyToken, requireAdmin, upload.single('image'), async (req, 
     console.log('Received product add request');
     // Parse array fields if they are sent as JSON strings
     if (typeof req.body.colors === 'string') {
-        req.body.colors = JSON.parse(req.body.colors);
+        req.body.colors = parseJsonArray(req.body.colors);
     }
     if (typeof req.body.sizes === 'string') {
-        req.body.sizes = JSON.parse(req.body.sizes);
+        req.body.sizes = parseJsonArray(req.body.sizes);
     }
-    if (typeof req.body.images === 'string') {
-        req.body.images = JSON.parse(req.body.images);
-    }
+    req.body.images = parseJsonArray(req.body.images);
 
     // Generate sequential 4-digit id
     const lastProduct = await Product.findOne().sort({ id: -1 }).limit(1);
@@ -85,7 +121,7 @@ router.post('/', verifyToken, requireAdmin, upload.single('image'), async (req, 
       ...req.body,
       status,
       id: newId,
-      imageUrl
+      imageUrl: imageUrl || req.body.imageUrl || ''
     };
 
     // Remove colorStock if present (fixes Cast to embedded failed error)
@@ -108,14 +144,12 @@ router.put('/:id', verifyToken, requireAdmin, upload.single('image'), async (req
   try {
     // Parse JSON fields if needed
     if (typeof req.body.colors === 'string') {
-      req.body.colors = JSON.parse(req.body.colors);
+      req.body.colors = parseJsonArray(req.body.colors);
     }
     if (typeof req.body.sizes === 'string') {
-      req.body.sizes = JSON.parse(req.body.sizes);
+      req.body.sizes = parseJsonArray(req.body.sizes);
     }
-    if (typeof req.body.images === 'string') {
-        req.body.images = JSON.parse(req.body.images);
-    }
+    req.body.images = parseJsonArray(req.body.images);
     // Parse colorStock if sent as a string (defensive fix)
     if (typeof req.body.colorStock === 'string') {
       try {
